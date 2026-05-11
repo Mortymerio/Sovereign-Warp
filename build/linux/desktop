@@ -1,0 +1,13 @@
+[Desktop Entry]
+Version=1.0
+Name=My Product
+Comment=A M3Warp application
+# The Exec line includes %u to pass the URL to the application
+Exec=/usr/local/bin/m3warp.exe %u
+Terminal=false
+Type=Application
+Icon=m3warp.exe
+Categories=Utility;
+StartupWMClass=m3warp.exe
+
+ 

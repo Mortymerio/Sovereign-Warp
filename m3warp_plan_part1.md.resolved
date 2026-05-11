@@ -1,0 +1,616 @@
+# 🚀 M3Warp — Plan de Implementación Completo (Parte 1: Backend Go)
+
+> **Objetivo**: Editor de escritorio de alto rendimiento usando **Wails v3 + Go + React + Monaco Editor**.
+> Este documento está diseñado para ser ejecutado paso a paso por un agente AI.
+
+---
+
+## 📁 Estructura del Proyecto
+
+```
+M3Warp/
+├── main.go                    # Entry point Wails v3
+├── go.mod
+├── go.sum
+├── Taskfile.yml               # Build system (reemplaza Makefile)
+├── services/
+│   ├── filesystem.go          # File Explorer + CRUD
+│   ├── editor.go              # File Paging (lecturas por chunks)
+│   ├── search.go              # Búsqueda paralela + FTS5
+│   └── settings.go            # Configuración persistente
+├── internal/
+│   ├── index/
+│   │   └── sqlite_fts.go      # Motor SQLite FTS5 embebido
+│   └── watcher/
+│       └── fswatch.go         # File system watcher (fsnotify)
+├── frontend/
+│   ├── package.json
+│   ├── vite.config.ts
+│   ├── index.html
+│   ├── src/
+│   │   ├── main.tsx
+│   │   ├── App.tsx
+│   │   ├── store.ts           # Zustand store
+│   │   ├── themes.ts          # Sistema de temas CSS vars
+│   │   ├── index.css
+│   │   ├── components/
+│   │   │   ├── MonacoEditor.tsx
+│   │   │   ├── FileExplorer.tsx
+│   │   │   ├── SearchPanel.tsx
+│   │   │   ├── TabBar.tsx
+│   │   │   ├── StatusBar.tsx
+│   │   │   ├── CommandPalette.tsx
+│   │   │   └── SettingsModal.tsx
+│   │   └── lib/
+│   │       ├── bindings.ts    # Auto-generado por Wails
+│   │       └── keybindings.ts
+│   └── wailsjs/               # Auto-generado por Wails
+└── build/
+    └── windows/
+        └── icon.ico
+```
+
+---
+
+## ⚙️ FASE 1: Inicialización del Proyecto Wails v3
+
+### Paso 1.1: Crear proyecto
+
+```bash
+# Instalar Wails CLI
+go install github.com/wailsapp/wails/v3/cmd/wails3@latest
+
+# Crear proyecto con React + TS
+wails3 init -n M3Warp -t react-ts
+
+# Verificar
+cd M3Warp && wails3 dev
+```
+
+### Paso 1.2: `main.go` — Entry Point con Services
+
+```go
+package main
+
+import (
+	"embed"
+	"log"
+
+	"github.com/wailsapp/wails/v3/pkg/application"
+
+	"m3warp/services"
+)
+
+//go:embed frontend/dist
+var assets embed.FS
+
+func main() {
+	app := application.New(application.Options{
+		Name:        "M3Warp",
+		Description: "High-Performance Code Editor",
+		Assets: application.AssetOptions{
+			FS: assets,
+		},
+		Services: []application.Service{
+			application.NewService(services.NewFilesystemService()),
+			application.NewService(services.NewEditorService()),
+			application.NewService(services.NewSearchService()),
+			application.NewService(services.NewSettingsService()),
+		},
+	})
+
+	win := app.NewWebviewWindowWithOptions(application.WebviewWindowOptions{
+		Title:     "M3Warp",
+		Width:     1400,
+		Height:    900,
+		MinWidth:  800,
+		MinHeight: 600,
+		Frameless: true,
+		Windows: application.WindowsWindow{
+			Theme: application.SystemDefault,
+		},
+	})
+	_ = win
+
+	if err := app.Run(); err != nil {
+		log.Fatal(err)
+	}
+}
+```
+
+---
+
+## ⚡ FASE 2: Motor de Archivos "Infinity" — `services/editor.go`
+
+### Concepto Clave
+Go **NUNCA** carga el archivo completo. Usa `io.SectionReader` para saltar a posiciones exactas.
+
+```go
+package services
+
+import (
+	"bufio"
+	"fmt"
+	"io"
+	"os"
+	"strings"
+	"sync"
+)
+
+// EditorService maneja la lectura paginada de archivos grandes.
+type EditorService struct {
+	openFiles map[string]*openFile
+	mu        sync.RWMutex
+}
+
+type openFile struct {
+	path     string
+	file     *os.File
+	lineIndex []int64 // offset de cada línea
+	totalLines int
+	size     int64
+}
+
+// FileChunk es lo que devolvemos al frontend.
+type FileChunk struct {
+	Lines      []string `json:"lines"`
+	StartLine  int      `json:"startLine"`
+	EndLine    int      `json:"endLine"`
+	TotalLines int      `json:"totalLines"`
+	FileSize   int64    `json:"fileSize"`
+	Encoding   string   `json:"encoding"`
+}
+
+type FileMetadata struct {
+	Path       string `json:"path"`
+	Size       int64  `json:"size"`
+	TotalLines int    `json:"totalLines"`
+	Language   string `json:"language"`
+	ReadOnly   bool   `json:"readOnly"`
+}
+
+func NewEditorService() *EditorService {
+	return &EditorService{
+		openFiles: make(map[string]*openFile),
+	}
+}
+
+// OpenFile indexa las posiciones de cada línea para acceso O(1).
+// Esto toma ~200ms para un archivo de 1GB (solo lee offsets).
+func (s *EditorService) OpenFile(path string) (*FileMetadata, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Si ya está abierto, devolver metadata
+	if of, ok := s.openFiles[path]; ok {
+		return &FileMetadata{
+			Path: path, Size: of.size,
+			TotalLines: of.totalLines,
+			Language: detectLanguage(path),
+		}, nil
+	}
+
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("cannot open file: %w", err)
+	}
+
+	info, _ := f.Stat()
+
+	// Indexar offsets de línea
+	offsets := []int64{0}
+	reader := bufio.NewReaderSize(f, 64*1024) // 64KB buffer
+	var offset int64
+
+	for {
+		line, err := reader.ReadBytes('\n')
+		offset += int64(len(line))
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			f.Close()
+			return nil, err
+		}
+		offsets = append(offsets, offset)
+	}
+
+	of := &openFile{
+		path:      path,
+		file:      f,
+		lineIndex: offsets,
+		totalLines: len(offsets),
+		size:      info.Size(),
+	}
+	s.openFiles[path] = of
+
+	return &FileMetadata{
+		Path: path, Size: info.Size(),
+		TotalLines: of.totalLines,
+		Language: detectLanguage(path),
+	}, nil
+}
+
+// ReadLines devuelve un rango de líneas. El frontend pide chunks de ~1000 líneas.
+func (s *EditorService) ReadLines(path string, from, to int) (*FileChunk, error) {
+	s.mu.RLock()
+	of, ok := s.openFiles[path]
+	s.mu.RUnlock()
+
+	if !ok {
+		return nil, fmt.Errorf("file not open: %s", path)
+	}
+
+	// Clamp
+	if from < 1 { from = 1 }
+	if to > of.totalLines { to = of.totalLines }
+	if from > to { return &FileChunk{Lines: []string{}, StartLine: from, EndLine: to, TotalLines: of.totalLines}, nil }
+
+	startOffset := of.lineIndex[from-1]
+	var endOffset int64
+	if to < of.totalLines {
+		endOffset = of.lineIndex[to]
+	} else {
+		endOffset = of.size
+	}
+
+	buf := make([]byte, endOffset-startOffset)
+	_, err := of.file.ReadAt(buf, startOffset)
+	if err != nil && err != io.EOF {
+		return nil, err
+	}
+
+	rawLines := strings.Split(string(buf), "\n")
+	// Limpiar último elemento vacío
+	if len(rawLines) > 0 && rawLines[len(rawLines)-1] == "" {
+		rawLines = rawLines[:len(rawLines)-1]
+	}
+
+	return &FileChunk{
+		Lines:      rawLines,
+		StartLine:  from,
+		EndLine:    to,
+		TotalLines: of.totalLines,
+		FileSize:   of.size,
+		Encoding:   "utf-8",
+	}, nil
+}
+
+// SaveFile guarda contenido completo (para archivos normales).
+func (s *EditorService) SaveFile(path, content string) error {
+	return os.WriteFile(path, []byte(content), 0644)
+}
+
+// CloseFile libera el handle del archivo.
+func (s *EditorService) CloseFile(path string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if of, ok := s.openFiles[path]; ok {
+		of.file.Close()
+		delete(s.openFiles, path)
+	}
+}
+
+func detectLanguage(path string) string {
+	ext := map[string]string{
+		".go": "go", ".js": "javascript", ".ts": "typescript",
+		".tsx": "typescriptreact", ".py": "python", ".rs": "rust",
+		".md": "markdown", ".json": "json", ".css": "css",
+		".html": "html", ".sql": "sql", ".yaml": "yaml",
+		".yml": "yaml", ".toml": "toml", ".sh": "shell",
+	}
+	for e, lang := range ext {
+		if strings.HasSuffix(path, e) { return lang }
+	}
+	return "plaintext"
+}
+```
+
+---
+
+## 🔍 FASE 3: Motor de Búsqueda — `services/search.go`
+
+```go
+package services
+
+import (
+	"context"
+	"os"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"sync"
+	"sync/atomic"
+)
+
+type SearchService struct{}
+
+func NewSearchService() *SearchService { return &SearchService{} }
+
+// SearchResult representa una coincidencia en un archivo.
+type SearchResult struct {
+	FilePath string `json:"filePath"`
+	Line     int    `json:"line"`
+	Column   int    `json:"column"`
+	Preview  string `json:"preview"` // Contexto de la línea
+	Match    string `json:"match"`
+}
+
+type SearchProgress struct {
+	Results    []SearchResult `json:"results"`
+	FilesTotal int64          `json:"filesTotal"`
+	Done       bool           `json:"done"`
+}
+
+// SearchInFolder busca texto en paralelo usando todos los cores.
+func (s *SearchService) SearchInFolder(
+	rootPath, query string, caseSensitive bool, maxResults int,
+) (*SearchProgress, error) {
+
+	if maxResults <= 0 { maxResults = 500 }
+
+	var (
+		results   []SearchResult
+		mu        sync.Mutex
+		fileCount int64
+		workers   = runtime.NumCPU()
+		fileCh    = make(chan string, workers*4)
+		wg        sync.WaitGroup
+		ctx, cancel = context.WithCancel(context.Background())
+	)
+	defer cancel()
+
+	searchQuery := query
+	if !caseSensitive {
+		searchQuery = strings.ToLower(query)
+	}
+
+	// Spawn workers
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for path := range fileCh {
+				select {
+				case <-ctx.Done():
+					return
+				default:
+				}
+
+				matches := searchInFile(path, searchQuery, caseSensitive)
+				if len(matches) > 0 {
+					mu.Lock()
+					results = append(results, matches...)
+					if len(results) >= maxResults {
+						cancel()
+					}
+					mu.Unlock()
+				}
+			}
+		}()
+	}
+
+	// Walk directory
+	skipDirs := map[string]bool{
+		"node_modules": true, ".git": true, "vendor": true,
+		"dist": true, "__pycache__": true, ".next": true,
+	}
+
+	_ = filepath.WalkDir(rootPath, func(path string, d os.DirEntry, err error) error {
+		if err != nil { return nil }
+		if ctx.Err() != nil { return filepath.SkipAll }
+
+		if d.IsDir() {
+			if skipDirs[d.Name()] || strings.HasPrefix(d.Name(), ".") {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+
+		// Solo archivos de texto (por extensión)
+		if isTextFile(d.Name()) {
+			atomic.AddInt64(&fileCount, 1)
+			fileCh <- path
+		}
+		return nil
+	})
+
+	close(fileCh)
+	wg.Wait()
+
+	if len(results) > maxResults {
+		results = results[:maxResults]
+	}
+
+	return &SearchProgress{
+		Results:    results,
+		FilesTotal: fileCount,
+		Done:       true,
+	}, nil
+}
+
+func searchInFile(path, query string, caseSensitive bool) []SearchResult {
+	data, err := os.ReadFile(path)
+	if err != nil { return nil }
+
+	// Limitar archivos grandes (>10MB skip)
+	if len(data) > 10*1024*1024 { return nil }
+
+	content := string(data)
+	lines := strings.Split(content, "\n")
+	var results []SearchResult
+
+	for i, line := range lines {
+		searchLine := line
+		if !caseSensitive {
+			searchLine = strings.ToLower(line)
+		}
+
+		col := strings.Index(searchLine, query)
+		if col >= 0 {
+			preview := line
+			if len(preview) > 200 {
+				start := col - 50
+				if start < 0 { start = 0 }
+				end := col + len(query) + 100
+				if end > len(preview) { end = len(preview) }
+				preview = preview[start:end]
+			}
+
+			results = append(results, SearchResult{
+				FilePath: path,
+				Line:     i + 1,
+				Column:   col + 1,
+				Preview:  strings.TrimSpace(preview),
+				Match:    query,
+			})
+
+			if len(results) >= 50 { break } // Max per file
+		}
+	}
+	return results
+}
+
+func isTextFile(name string) bool {
+	textExts := []string{
+		".go", ".js", ".ts", ".tsx", ".jsx", ".py", ".rs",
+		".md", ".txt", ".json", ".yaml", ".yml", ".toml",
+		".html", ".css", ".scss", ".sql", ".sh", ".bat",
+		".xml", ".csv", ".env", ".gitignore", ".dockerfile",
+		".c", ".cpp", ".h", ".java", ".rb", ".php", ".swift",
+	}
+	lower := strings.ToLower(name)
+	for _, ext := range textExts {
+		if strings.HasSuffix(lower, ext) { return true }
+	}
+	return false
+}
+```
+
+---
+
+## 📂 FASE 4: File Explorer — `services/filesystem.go`
+
+```go
+package services
+
+import (
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+)
+
+type FilesystemService struct {
+	rootPath string
+}
+
+func NewFilesystemService() *FilesystemService {
+	return &FilesystemService{}
+}
+
+type FileNode struct {
+	Name     string     `json:"name"`
+	Path     string     `json:"path"`
+	IsDir    bool       `json:"isDir"`
+	Size     int64      `json:"size"`
+	Children []FileNode `json:"children,omitempty"`
+	Language string     `json:"language,omitempty"`
+}
+
+// OpenFolder establece el root del workspace.
+func (s *FilesystemService) OpenFolder(path string) (*FileNode, error) {
+	s.rootPath = path
+	return s.ReadDirectory(path, 2) // Profundidad inicial: 2 niveles
+}
+
+// ReadDirectory lee un directorio con profundidad limitada (lazy loading).
+func (s *FilesystemService) ReadDirectory(path string, depth int) (*FileNode, error) {
+	info, err := os.Stat(path)
+	if err != nil { return nil, err }
+
+	node := &FileNode{
+		Name:  info.Name(),
+		Path:  path,
+		IsDir: info.IsDir(),
+		Size:  info.Size(),
+	}
+
+	if !info.IsDir() || depth <= 0 {
+		if !info.IsDir() {
+			node.Language = detectLanguage(path)
+		}
+		return node, nil
+	}
+
+	entries, err := os.ReadDir(path)
+	if err != nil { return node, nil }
+
+	skipDirs := map[string]bool{
+		"node_modules": true, ".git": true, "vendor": true,
+		"dist": true, "__pycache__": true,
+	}
+
+	var dirs, files []FileNode
+
+	for _, entry := range entries {
+		name := entry.Name()
+		if strings.HasPrefix(name, ".") && name != ".env" { continue }
+		if skipDirs[name] { continue }
+
+		fullPath := filepath.Join(path, name)
+		child, err := s.ReadDirectory(fullPath, depth-1)
+		if err != nil { continue }
+
+		if child.IsDir {
+			dirs = append(dirs, *child)
+		} else {
+			files = append(files, *child)
+		}
+	}
+
+	// Ordenar: directorios primero, luego archivos, ambos alfabéticamente
+	sort.Slice(dirs, func(i, j int) bool {
+		return strings.ToLower(dirs[i].Name) < strings.ToLower(dirs[j].Name)
+	})
+	sort.Slice(files, func(i, j int) bool {
+		return strings.ToLower(files[i].Name) < strings.ToLower(files[j].Name)
+	})
+
+	node.Children = append(dirs, files...)
+	return node, nil
+}
+
+// ExpandDirectory carga hijos de un directorio (lazy expand en el tree).
+func (s *FilesystemService) ExpandDirectory(path string) ([]FileNode, error) {
+	node, err := s.ReadDirectory(path, 1)
+	if err != nil { return nil, err }
+	return node.Children, nil
+}
+
+// CreateFile crea un archivo nuevo.
+func (s *FilesystemService) CreateFile(path string) error {
+	dir := filepath.Dir(path)
+	os.MkdirAll(dir, 0755)
+	return os.WriteFile(path, []byte(""), 0644)
+}
+
+// CreateFolder crea un directorio.
+func (s *FilesystemService) CreateFolder(path string) error {
+	return os.MkdirAll(path, 0755)
+}
+
+// DeletePath elimina archivo o directorio.
+func (s *FilesystemService) DeletePath(path string) error {
+	return os.RemoveAll(path)
+}
+
+// RenamePath renombra un archivo o directorio.
+func (s *FilesystemService) RenamePath(oldPath, newPath string) error {
+	return os.Rename(oldPath, newPath)
+}
+```
+
+---
+
+> **Continúa en Parte 2**: Frontend React + Monaco, UI/UX, Store Zustand, Temas, y Command Palette.

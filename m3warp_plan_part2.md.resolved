@@ -1,0 +1,716 @@
+# 🚀 M3Warp — Plan de Implementación (Parte 2: Frontend React + Monaco)
+
+---
+
+## 🎨 FASE 5: Frontend — Componentes React
+
+### 5.1 `frontend/src/store.ts` — Zustand Store
+
+```typescript
+import { create } from 'zustand';
+
+interface OpenTab {
+  path: string;
+  name: string;
+  language: string;
+  isDirty: boolean;
+  totalLines: number;
+  fileSize: number;
+}
+
+interface SearchResult {
+  filePath: string;
+  line: number;
+  column: number;
+  preview: string;
+  match: string;
+}
+
+interface FileNode {
+  name: string;
+  path: string;
+  isDir: boolean;
+  size: number;
+  children?: FileNode[];
+  language?: string;
+}
+
+interface AppState {
+  // Workspace
+  rootPath: string | null;
+  fileTree: FileNode | null;
+  
+  // Tabs
+  openTabs: OpenTab[];
+  activeTabPath: string | null;
+  
+  // Editor
+  cursorLine: number;
+  cursorCol: number;
+  
+  // Search
+  searchQuery: string;
+  searchResults: SearchResult[];
+  isSearching: boolean;
+  
+  // UI
+  theme: string;
+  isSidebarOpen: boolean;
+  isSearchPanelOpen: boolean;
+  isCommandPaletteOpen: boolean;
+  sidebarWidth: number;
+  fontSize: number;
+  
+  // Actions
+  setRootPath: (path: string) => void;
+  setFileTree: (tree: FileNode) => void;
+  openFile: (path: string, name: string, lang: string, totalLines: number, size: number) => void;
+  closeTab: (path: string) => void;
+  setActiveTab: (path: string) => void;
+  markDirty: (path: string, dirty: boolean) => void;
+  setCursor: (line: number, col: number) => void;
+  setSearchQuery: (q: string) => void;
+  setSearchResults: (r: SearchResult[]) => void;
+  setTheme: (t: string) => void;
+  toggleSidebar: () => void;
+  toggleSearchPanel: () => void;
+  toggleCommandPalette: () => void;
+  setFontSize: (s: number) => void;
+}
+
+export const useStore = create<AppState>((set, get) => ({
+  rootPath: null,
+  fileTree: null,
+  openTabs: [],
+  activeTabPath: null,
+  cursorLine: 1,
+  cursorCol: 1,
+  searchQuery: '',
+  searchResults: [],
+  isSearching: false,
+  theme: localStorage.getItem('m3warp-theme') || 'cyber-ronin',
+  isSidebarOpen: true,
+  isSearchPanelOpen: false,
+  isCommandPaletteOpen: false,
+  sidebarWidth: 260,
+  fontSize: parseInt(localStorage.getItem('m3warp-fontSize') || '14'),
+
+  setRootPath: (path) => set({ rootPath: path }),
+  setFileTree: (tree) => set({ fileTree: tree }),
+
+  openFile: (path, name, lang, totalLines, size) => {
+    const { openTabs } = get();
+    const exists = openTabs.find(t => t.path === path);
+    if (!exists) {
+      set({ 
+        openTabs: [...openTabs, { path, name, language: lang, isDirty: false, totalLines, fileSize: size }],
+        activeTabPath: path 
+      });
+    } else {
+      set({ activeTabPath: path });
+    }
+  },
+
+  closeTab: (path) => {
+    const { openTabs, activeTabPath } = get();
+    const filtered = openTabs.filter(t => t.path !== path);
+    let newActive = activeTabPath;
+    if (activeTabPath === path) {
+      newActive = filtered.length > 0 ? filtered[filtered.length - 1].path : null;
+    }
+    set({ openTabs: filtered, activeTabPath: newActive });
+  },
+
+  setActiveTab: (path) => set({ activeTabPath: path }),
+  markDirty: (path, dirty) => set(s => ({
+    openTabs: s.openTabs.map(t => t.path === path ? { ...t, isDirty: dirty } : t)
+  })),
+  setCursor: (line, col) => set({ cursorLine: line, cursorCol: col }),
+  setSearchQuery: (q) => set({ searchQuery: q }),
+  setSearchResults: (r) => set({ searchResults: r, isSearching: false }),
+  setTheme: (t) => { localStorage.setItem('m3warp-theme', t); set({ theme: t }); },
+  toggleSidebar: () => set(s => ({ isSidebarOpen: !s.isSidebarOpen })),
+  toggleSearchPanel: () => set(s => ({ isSearchPanelOpen: !s.isSearchPanelOpen })),
+  toggleCommandPalette: () => set(s => ({ isCommandPaletteOpen: !s.isCommandPaletteOpen })),
+  setFontSize: (s) => { localStorage.setItem('m3warp-fontSize', String(s)); set({ fontSize: s }); },
+}));
+```
+
+---
+
+### 5.2 `MonacoEditor.tsx` — Editor con Paginación Virtual
+
+```tsx
+import { useEffect, useRef, useCallback } from 'react';
+import * as monaco from 'monaco-editor';
+import { useStore } from '../store';
+
+// Wails bindings auto-generados
+import { EditorService } from '../../wailsjs/go/services';
+
+const CHUNK_SIZE = 2000; // líneas por chunk
+
+interface Props {
+  filePath: string;
+  language: string;
+  totalLines: number;
+}
+
+export default function MonacoEditor({ filePath, language, totalLines }: Props) {
+  const editorRef = useRef<monaco.editor.IStandaloneCodeEditor | null>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const loadedRanges = useRef<Set<string>>(new Set());
+  const fontSize = useStore(s => s.fontSize);
+  const theme = useStore(s => s.theme);
+  const setCursor = useStore(s => s.setCursor);
+  const markDirty = useStore(s => s.markDirty);
+
+  // Crear editor al montar
+  useEffect(() => {
+    if (!containerRef.current) return;
+
+    const editor = monaco.editor.create(containerRef.current, {
+      language,
+      theme: theme.includes('light') ? 'vs' : 'vs-dark',
+      fontSize,
+      minimap: { enabled: true, scale: 2 },
+      smoothScrolling: true,
+      cursorBlinking: 'smooth',
+      cursorSmoothCaretAnimation: 'on',
+      renderWhitespace: 'selection',
+      bracketPairColorization: { enabled: true },
+      guides: { bracketPairs: true, indentation: true },
+      padding: { top: 16 },
+      lineNumbers: 'on',
+      wordWrap: 'off',
+      scrollBeyondLastLine: false,
+      automaticLayout: true,
+    });
+
+    editorRef.current = editor;
+
+    // Track cursor
+    editor.onDidChangeCursorPosition((e) => {
+      setCursor(e.position.lineNumber, e.position.column);
+    });
+
+    // Track dirty state
+    editor.onDidChangeModelContent(() => {
+      markDirty(filePath, true);
+    });
+
+    // Cargar chunk inicial
+    loadChunk(1, CHUNK_SIZE);
+
+    // Scroll listener para lazy loading
+    editor.onDidScrollChange(debounce((e: monaco.IScrollEvent) => {
+      if (!editorRef.current) return;
+      const visibleRanges = editorRef.current.getVisibleRanges();
+      if (visibleRanges.length === 0) return;
+
+      const firstVisible = visibleRanges[0].startLineNumber;
+      const lastVisible = visibleRanges[visibleRanges.length - 1].endLineNumber;
+
+      // Precargar 500 líneas antes y después del viewport
+      const bufferStart = Math.max(1, firstVisible - 500);
+      const bufferEnd = Math.min(totalLines, lastVisible + 500);
+
+      // Cargar chunks faltantes
+      for (let start = bufferStart; start <= bufferEnd; start += CHUNK_SIZE) {
+        const end = Math.min(start + CHUNK_SIZE - 1, totalLines);
+        const key = `${start}-${end}`;
+        if (!loadedRanges.current.has(key)) {
+          loadChunk(start, end);
+        }
+      }
+    }, 150));
+
+    // Ctrl+S = Guardar
+    editor.addAction({
+      id: 'm3warp-save',
+      label: 'Save File',
+      keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS],
+      run: async () => {
+        const content = editor.getValue();
+        await EditorService.SaveFile(filePath, content);
+        markDirty(filePath, false);
+      },
+    });
+
+    return () => {
+      editor.dispose();
+      EditorService.CloseFile(filePath);
+    };
+  }, [filePath]);
+
+  const loadChunk = useCallback(async (from: number, to: number) => {
+    const key = `${from}-${to}`;
+    if (loadedRanges.current.has(key)) return;
+    loadedRanges.current.add(key);
+
+    try {
+      const chunk = await EditorService.ReadLines(filePath, from, to);
+      if (!editorRef.current) return;
+
+      const model = editorRef.current.getModel();
+      if (!model) return;
+
+      if (model.getLineCount() <= 1 && model.getLineContent(1) === '') {
+        // Primera carga
+        model.setValue(chunk.lines.join('\n'));
+      } else {
+        // Append: insertar al final
+        const lastLine = model.getLineCount();
+        const lastCol = model.getLineMaxColumn(lastLine);
+        model.applyEdits([{
+          range: new monaco.Range(lastLine, lastCol, lastLine, lastCol),
+          text: '\n' + chunk.lines.join('\n'),
+        }]);
+      }
+    } catch (err) {
+      console.error('Chunk load error:', err);
+      loadedRanges.current.delete(key);
+    }
+  }, [filePath]);
+
+  return (
+    <div ref={containerRef} className="w-full h-full" />
+  );
+}
+
+function debounce<T extends (...args: any[]) => void>(fn: T, ms: number) {
+  let timer: ReturnType<typeof setTimeout>;
+  return (...args: Parameters<T>) => {
+    clearTimeout(timer);
+    timer = setTimeout(() => fn(...args), ms);
+  };
+}
+```
+
+---
+
+### 5.3 `FileExplorer.tsx` — Árbol Lazy-Load
+
+```tsx
+import { useState, useEffect } from 'react';
+import { ChevronRight, ChevronDown, File, Folder, FolderOpen } from 'lucide-react';
+import { useStore } from '../store';
+import { FilesystemService, EditorService } from '../../wailsjs/go/services';
+
+interface FileNode {
+  name: string; path: string; isDir: boolean;
+  size: number; children?: FileNode[]; language?: string;
+}
+
+function TreeNode({ node, depth = 0 }: { node: FileNode; depth?: number }) {
+  const [expanded, setExpanded] = useState(depth < 1);
+  const [children, setChildren] = useState<FileNode[]>(node.children || []);
+  const activeTabPath = useStore(s => s.activeTabPath);
+  const openFile = useStore(s => s.openFile);
+
+  const handleExpand = async () => {
+    if (!node.isDir) return;
+    if (!expanded && children.length === 0) {
+      // Lazy load
+      const result = await FilesystemService.ExpandDirectory(node.path);
+      setChildren(result);
+    }
+    setExpanded(!expanded);
+  };
+
+  const handleClick = async () => {
+    if (node.isDir) {
+      handleExpand();
+    } else {
+      const meta = await EditorService.OpenFile(node.path);
+      openFile(meta.path, node.name, meta.language, meta.totalLines, meta.size);
+    }
+  };
+
+  const isActive = activeTabPath === node.path;
+
+  return (
+    <div>
+      <div
+        onClick={handleClick}
+        className={`flex items-center gap-1.5 px-2 py-[5px] cursor-pointer text-[13px]
+          transition-all duration-150 select-none group
+          ${isActive ? 'bg-blue-500/15 text-blue-400' : 'hover:bg-white/5 text-[var(--sidebar-text)]'}
+        `}
+        style={{ paddingLeft: `${depth * 16 + 8}px` }}
+      >
+        {node.isDir ? (
+          <>
+            {expanded ? <ChevronDown size={14} className="opacity-50" /> : <ChevronRight size={14} className="opacity-50" />}
+            {expanded ? <FolderOpen size={15} className="text-amber-400" /> : <Folder size={15} className="text-amber-400/70" />}
+          </>
+        ) : (
+          <>
+            <span className="w-[14px]" />
+            <File size={14} className="opacity-40" />
+          </>
+        )}
+        <span className="truncate font-medium">{node.name}</span>
+        {!node.isDir && (
+          <span className="ml-auto text-[10px] opacity-20 group-hover:opacity-40">
+            {formatSize(node.size)}
+          </span>
+        )}
+      </div>
+      {expanded && children.map(child => (
+        <TreeNode key={child.path} node={child} depth={depth + 1} />
+      ))}
+    </div>
+  );
+}
+
+function formatSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes}B`;
+  if (bytes < 1048576) return `${(bytes/1024).toFixed(0)}K`;
+  return `${(bytes/1048576).toFixed(1)}M`;
+}
+
+export default function FileExplorer() {
+  const fileTree = useStore(s => s.fileTree);
+  const setFileTree = useStore(s => s.setFileTree);
+  const setRootPath = useStore(s => s.setRootPath);
+
+  const handleOpenFolder = async () => {
+    // Wails v3 tiene diálogo nativo
+    const path = await (window as any).runtime.OpenDirectoryDialog({});
+    if (path) {
+      const tree = await FilesystemService.OpenFolder(path);
+      setFileTree(tree);
+      setRootPath(path);
+    }
+  };
+
+  return (
+    <div className="h-full flex flex-col bg-[var(--sidebar-bg)] text-[var(--sidebar-text)]">
+      <div className="h-10 flex items-center justify-between px-3 border-b border-white/5 shrink-0">
+        <span className="text-[10px] font-black uppercase tracking-[0.15em] opacity-50">
+          Explorer
+        </span>
+        <button onClick={handleOpenFolder} className="text-[11px] opacity-50 hover:opacity-100 hover:text-blue-400 transition-all">
+          Open
+        </button>
+      </div>
+      <div className="flex-1 overflow-y-auto overflow-x-hidden py-1">
+        {fileTree ? (
+          <TreeNode node={fileTree} />
+        ) : (
+          <div className="flex flex-col items-center justify-center h-full gap-4 opacity-30">
+            <Folder size={40} />
+            <button onClick={handleOpenFolder} className="text-xs hover:text-blue-400 transition-colors">
+              Open a Folder
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+```
+
+---
+
+### 5.4 `TabBar.tsx` — Pestañas de Archivos
+
+```tsx
+import { X, Circle } from 'lucide-react';
+import { useStore } from '../store';
+
+export default function TabBar() {
+  const tabs = useStore(s => s.openTabs);
+  const activeTab = useStore(s => s.activeTabPath);
+  const setActiveTab = useStore(s => s.setActiveTab);
+  const closeTab = useStore(s => s.closeTab);
+
+  if (tabs.length === 0) return null;
+
+  return (
+    <div className="h-9 flex items-end bg-[var(--editor-bg)] border-b border-white/5 overflow-x-auto shrink-0">
+      {tabs.map(tab => (
+        <div
+          key={tab.path}
+          onClick={() => setActiveTab(tab.path)}
+          className={`group flex items-center gap-2 px-4 h-[34px] text-[12px] cursor-pointer
+            border-r border-white/5 transition-all duration-150 select-none max-w-[200px]
+            ${activeTab === tab.path
+              ? 'bg-[var(--editor-bg)] text-white border-t-2 border-t-blue-500'
+              : 'bg-black/10 text-white/40 hover:text-white/70 border-t-2 border-t-transparent'
+            }`}
+        >
+          {tab.isDirty && (
+            <Circle size={8} className="fill-amber-400 text-amber-400 shrink-0" />
+          )}
+          <span className="truncate font-medium">{tab.name}</span>
+          <button
+            onClick={(e) => { e.stopPropagation(); closeTab(tab.path); }}
+            className="opacity-0 group-hover:opacity-60 hover:!opacity-100 hover:text-red-400 transition-all shrink-0"
+          >
+            <X size={14} />
+          </button>
+        </div>
+      ))}
+    </div>
+  );
+}
+```
+
+---
+
+### 5.5 `StatusBar.tsx`
+
+```tsx
+import { useStore } from '../store';
+
+export default function StatusBar() {
+  const cursor = useStore(s => ({ line: s.cursorLine, col: s.cursorCol }));
+  const activeTab = useStore(s => s.openTabs.find(t => t.path === s.activeTabPath));
+  const fontSize = useStore(s => s.fontSize);
+
+  return (
+    <div className="h-6 flex items-center justify-between px-3 bg-[#007acc] text-white text-[11px] shrink-0 select-none">
+      <div className="flex items-center gap-4">
+        <span className="font-bold">M3Warp</span>
+        {activeTab && (
+          <span className="opacity-70">{activeTab.language.toUpperCase()}</span>
+        )}
+      </div>
+      <div className="flex items-center gap-4 opacity-80">
+        {activeTab && (
+          <>
+            <span>Ln {cursor.line}, Col {cursor.col}</span>
+            <span>{activeTab.totalLines.toLocaleString()} lines</span>
+            <span>{formatBytes(activeTab.fileSize)}</span>
+          </>
+        )}
+        <span>UTF-8</span>
+        <span>{fontSize}px</span>
+      </div>
+    </div>
+  );
+}
+
+function formatBytes(b: number): string {
+  if (b < 1024) return b + 'B';
+  if (b < 1048576) return (b / 1024).toFixed(1) + 'KB';
+  if (b < 1073741824) return (b / 1048576).toFixed(1) + 'MB';
+  return (b / 1073741824).toFixed(2) + 'GB';
+}
+```
+
+---
+
+### 5.6 `App.tsx` — Layout Principal
+
+```tsx
+import { useEffect, useRef, useState } from 'react';
+import FileExplorer from './components/FileExplorer';
+import MonacoEditor from './components/MonacoEditor';
+import TabBar from './components/TabBar';
+import StatusBar from './components/StatusBar';
+import SearchPanel from './components/SearchPanel';
+import CommandPalette from './components/CommandPalette';
+import { useStore } from './store';
+
+export default function App() {
+  const isSidebarOpen = useStore(s => s.isSidebarOpen);
+  const activeTab = useStore(s => s.openTabs.find(t => t.path === s.activeTabPath));
+  const toggleCommandPalette = useStore(s => s.toggleCommandPalette);
+  const toggleSidebar = useStore(s => s.toggleSidebar);
+  const [sidebarWidth, setSidebarWidth] = useState(260);
+  const isResizing = useRef(false);
+
+  useEffect(() => {
+    const handleKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'p') {
+        e.preventDefault();
+        toggleCommandPalette();
+      }
+      if ((e.ctrlKey || e.metaKey) && e.key === 'b') {
+        e.preventDefault();
+        toggleSidebar();
+      }
+    };
+    window.addEventListener('keydown', handleKey);
+    return () => window.removeEventListener('keydown', handleKey);
+  }, []);
+
+  useEffect(() => {
+    const onMove = (e: MouseEvent) => {
+      if (isResizing.current) {
+        setSidebarWidth(Math.max(180, Math.min(500, e.clientX)));
+      }
+    };
+    const onUp = () => { isResizing.current = false; document.body.style.cursor = ''; };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+    return () => { window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp); };
+  }, []);
+
+  return (
+    <div className="h-screen w-screen flex flex-col overflow-hidden bg-[var(--editor-bg)] text-white font-['Inter',sans-serif]">
+      {/* Title bar (draggable, frameless) */}
+      <div className="h-8 flex items-center px-3 bg-[var(--titlebar-bg)] border-b border-white/5 select-none shrink-0"
+        style={{ WebkitAppRegion: 'drag' } as any}>
+        <span className="text-[11px] font-bold opacity-40 tracking-wider">M3WARP</span>
+        {/* Window controls */}
+        <div className="ml-auto flex gap-1" style={{ WebkitAppRegion: 'no-drag' } as any}>
+          <button className="w-6 h-6 rounded hover:bg-white/10 flex items-center justify-center text-[10px]">—</button>
+          <button className="w-6 h-6 rounded hover:bg-white/10 flex items-center justify-center text-[10px]">□</button>
+          <button className="w-6 h-6 rounded hover:bg-red-500 flex items-center justify-center text-[10px]">✕</button>
+        </div>
+      </div>
+
+      <div className="flex-1 flex overflow-hidden">
+        {/* Sidebar */}
+        {isSidebarOpen && (
+          <>
+            <div style={{ width: sidebarWidth }} className="shrink-0 h-full">
+              <FileExplorer />
+            </div>
+            <div
+              className="w-1 cursor-col-resize hover:bg-blue-500/40 transition-colors shrink-0"
+              onMouseDown={() => { isResizing.current = true; document.body.style.cursor = 'col-resize'; }}
+            />
+          </>
+        )}
+
+        {/* Main editor area */}
+        <div className="flex-1 min-w-0 flex flex-col">
+          <TabBar />
+          <div className="flex-1 overflow-hidden relative">
+            {activeTab ? (
+              <MonacoEditor
+                key={activeTab.path}
+                filePath={activeTab.path}
+                language={activeTab.language}
+                totalLines={activeTab.totalLines}
+              />
+            ) : (
+              <div className="h-full flex items-center justify-center opacity-20">
+                <div className="text-center">
+                  <p className="text-4xl font-black mb-2">M3Warp</p>
+                  <p className="text-sm">Ctrl+P to open a file</p>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+
+      <StatusBar />
+      <CommandPalette />
+    </div>
+  );
+}
+```
+
+---
+
+## 🎨 FASE 6: Sistema de Temas — `index.css`
+
+```css
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;700&display=swap');
+
+:root {
+  font-family: 'Inter', sans-serif;
+}
+
+/* Tema por defecto: Cyber Ronin (dark) */
+[data-theme="cyber-ronin"] {
+  --titlebar-bg: #171b1f;
+  --sidebar-bg: #1e2329;
+  --sidebar-text: #8892b0;
+  --editor-bg: #15191e;
+  --editor-text: #c9d1d9;
+  --border: #252b33;
+  --accent: #58a6ff;
+  --accent-glow: rgba(88, 166, 255, 0.15);
+}
+
+[data-theme="github-dark"] {
+  --titlebar-bg: #010409;
+  --sidebar-bg: #0d1117;
+  --sidebar-text: #c9d1d9;
+  --editor-bg: #0d1117;
+  --editor-text: #c9d1d9;
+  --border: #21262d;
+  --accent: #58a6ff;
+  --accent-glow: rgba(88, 166, 255, 0.1);
+}
+
+[data-theme="one-dark"] {
+  --titlebar-bg: #21252b;
+  --sidebar-bg: #282c34;
+  --sidebar-text: #abb2bf;
+  --editor-bg: #282c34;
+  --editor-text: #abb2bf;
+  --border: #3b4048;
+  --accent: #61afef;
+  --accent-glow: rgba(97, 175, 239, 0.12);
+}
+
+[data-theme="github-light"] {
+  --titlebar-bg: #f0f2f5;
+  --sidebar-bg: #f6f8fa;
+  --sidebar-text: #24292f;
+  --editor-bg: #ffffff;
+  --editor-text: #24292f;
+  --border: #d0d7de;
+  --accent: #0969da;
+  --accent-glow: rgba(9, 105, 218, 0.08);
+}
+
+/* Scrollbar premium */
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: rgba(255,255,255,0.1);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.2); }
+
+/* Animaciones */
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.animate-fade-in { animation: fadeIn 0.15s ease-out; }
+```
+
+---
+
+## 📋 Resumen de Dependencias Frontend
+
+```json
+{
+  "dependencies": {
+    "monaco-editor": "^0.52.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "zustand": "^5.0.0",
+    "lucide-react": "^1.8.0"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^6.0.0",
+    "vite": "^8.0.0",
+    "typescript": "^6.0.0"
+  }
+}
+```
+
+---
+
+## 🏁 Orden de Ejecución para Gemini Flash
+
+1. **Crear proyecto** con `wails3 init -n M3Warp -t react-ts`
+2. **Copiar** `services/editor.go`, `services/search.go`, `services/filesystem.go`
+3. **Copiar** `main.go` con los 3 services registrados
+4. **Instalar deps frontend**: `cd frontend && npm i monaco-editor zustand lucide-react`
+5. **Copiar** `store.ts`, `App.tsx`, todos los componentes
+6. **Copiar** `index.css` con el sistema de temas
+7. **Ejecutar**: `wails3 dev`
+8. **Iterar** UI/UX sobre la base funcional
