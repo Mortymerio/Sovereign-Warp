@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useStore } from '../store';
-import { EditorService } from '../../bindings/m3warp/services';
+import { EditorService } from '../../bindings/sovereign-warp/services';
 import { Table, LayoutGrid, FileSpreadsheet } from 'lucide-react';
 
 const COLUMN_COLORS = [

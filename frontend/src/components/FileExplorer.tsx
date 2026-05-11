@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { ChevronRight, ChevronDown, Folder, FolderOpen, FolderPlus, Trash2, Edit2, Copy, X } from 'lucide-react';
 
 import { useStore } from '../store';
-import { FilesystemService, EditorService, IntelService, WatchService, KnowledgeService } from '../../bindings/m3warp/services';
+import { FilesystemService, EditorService, IntelService, WatchService, KnowledgeService } from '../../bindings/sovereign-warp/services';
 import { Events } from '@wailsio/runtime';
 import ContextMenu from './ContextMenu';
 import FileIcon from './FileIcon';

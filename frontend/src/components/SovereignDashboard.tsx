@@ -1,6 +1,6 @@
 import { FolderOpen, History, Zap, Activity, Clock, FileCode, GitGraph } from 'lucide-react';
 import { useStore } from '../store';
-import { FilesystemService } from '../../bindings/m3warp/services';
+import { FilesystemService } from '../../bindings/sovereign-warp/services';
 
 export default function SovereignDashboard() {
   const rootPaths = useStore(s => s.rootPaths);

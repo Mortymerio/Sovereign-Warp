@@ -1,7 +1,7 @@
 import { Palette, GitGraph, Activity, ShieldCheck } from 'lucide-react';
 import { useState, useEffect } from 'react';
 import { useStore } from '../store';
-import { GitService, SystemService } from '../../bindings/m3warp/services';
+import { GitService, SystemService } from '../../bindings/sovereign-warp/services';
 import SystemHealthPanel from './SystemHealthPanel';
 
 const themes = ['cyber-ronin', 'github-dark', 'github-light'] as const;

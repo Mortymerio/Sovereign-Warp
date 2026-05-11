@@ -2,7 +2,7 @@ import { useState, useRef, useEffect } from 'react';
 import { Send, Bot, User, Trash2, X, Sparkles, RotateCcw, Settings, Key, Cpu, RefreshCw } from 'lucide-react';
 
 import { useStore } from '../store';
-import { AIService, EditorService } from '../../bindings/m3warp/services';
+import { AIService, EditorService } from '../../bindings/sovereign-warp/services';
 import { Events } from '@wailsio/runtime';
 
 export default function AISidebar() {

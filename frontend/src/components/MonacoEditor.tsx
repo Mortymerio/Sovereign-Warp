@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import * as monaco from 'monaco-editor';
 import { initVimMode } from 'monaco-vim';
 import { useStore } from '../store';
-import { EditorService, GitService, IntelService } from '../../bindings/m3warp/services';
+import { EditorService, GitService, IntelService } from '../../bindings/sovereign-warp/services';
 import { Events as WailsEvents } from '@wailsio/runtime';
 import { formatCode } from '../services/FormattingService';
 import NeuralHUD from './NeuralHUD';

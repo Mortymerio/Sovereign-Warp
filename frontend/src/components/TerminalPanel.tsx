@@ -2,7 +2,7 @@ import { useEffect, useRef } from 'react';
 import { Terminal } from 'xterm';
 import { FitAddon } from 'xterm-addon-fit';
 import { useStore } from '../store';
-import { TerminalService } from '../../bindings/m3warp/services';
+import { TerminalService } from '../../bindings/sovereign-warp/services';
 import { Events } from '@wailsio/runtime';
 
 export default function TerminalPanel() {

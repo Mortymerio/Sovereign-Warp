@@ -3,7 +3,7 @@ import { Brain, Save, Link as LinkIcon, FileText, Plus, X, Sparkles, Eye, Edit3 
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { useStore } from '../store';
-import { KnowledgeService, EditorService } from '../../bindings/m3warp/services';
+import { KnowledgeService, EditorService } from '../../bindings/sovereign-warp/services';
 
 export default function KnowledgePanel() {
   const isOpen = useStore(s => s.isKnowledgePanelOpen);

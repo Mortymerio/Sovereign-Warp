@@ -23,7 +23,7 @@ import ProjectPulse from './components/ProjectPulse';
 import SovereignDashboard from './components/SovereignDashboard';
 import SettingsPanel from './components/SettingsPanel';
 
-import { EditorService, ExtensionService } from '../bindings/m3warp/services';
+import { EditorService, ExtensionService } from '../bindings/sovereign-warp/services';
 import { Events as WailsEvents } from '@wailsio/runtime';
 import { Window } from '@wailsio/runtime';
 

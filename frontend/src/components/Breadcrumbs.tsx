@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { ChevronRight, Folder, FileCode, Eye, Zap } from 'lucide-react';
 import { useStore } from '../store';
-import { IntelService, FilesystemService, EditorService } from '../../bindings/m3warp/services';
+import { IntelService, FilesystemService, EditorService } from '../../bindings/sovereign-warp/services';
 import FileIcon from './FileIcon';
 
 interface Sibling {

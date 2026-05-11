@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { Search, Code, Box, ChevronRight } from 'lucide-react';
 import { useStore } from '../store';
-import { IntelService } from '../../bindings/m3warp/services';
+import { IntelService } from '../../bindings/sovereign-warp/services';
 
 import { Events } from '@wailsio/runtime';
 

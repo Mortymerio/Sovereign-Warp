@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { X, Cpu, HardDrive, Activity, Zap, ShieldCheck } from 'lucide-react';
-import { SystemService } from '../../bindings/m3warp/services';
+import { SystemService } from '../../bindings/sovereign-warp/services';
 
 interface Stats {
   cpu: number;

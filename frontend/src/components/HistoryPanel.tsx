@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Clock, RotateCcw, X, Eye, Calendar, HardDrive } from 'lucide-react';
 import { useStore } from '../store';
-import { HistoryService, EditorService } from '../../bindings/m3warp/services';
+import { HistoryService, EditorService } from '../../bindings/sovereign-warp/services';
 import { Events } from '@wailsio/runtime';
 
 export default function HistoryPanel() {

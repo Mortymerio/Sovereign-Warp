@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Activity, GitCommit, Search } from 'lucide-react';
 import { useStore } from '../store';
-import { GitService } from '../../bindings/m3warp/services';
+import { GitService } from '../../bindings/sovereign-warp/services';
 
 interface Commit {
   hash: string;

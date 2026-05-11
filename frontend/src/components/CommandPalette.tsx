@@ -3,7 +3,7 @@ import { Search, File, Command as CommandIcon, Box, Zap } from 'lucide-react';
 
 
 import { useStore } from '../store';
-import { IntelService, AIService } from '../../bindings/m3warp/services';
+import { IntelService, AIService } from '../../bindings/sovereign-warp/services';
 import { Events as WailsEvents } from '@wailsio/runtime';
 
 

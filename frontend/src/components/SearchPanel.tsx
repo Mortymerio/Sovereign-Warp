@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Search as SearchIcon, FileText, Loader2, Brain, Zap } from 'lucide-react';
 import { useStore } from '../store';
-import { SearchService, EditorService } from '../../bindings/m3warp/services';
+import { SearchService, EditorService } from '../../bindings/sovereign-warp/services';
 
 export default function SearchPanel() {
   const isOpen = useStore(s => s.isSearchPanelOpen);

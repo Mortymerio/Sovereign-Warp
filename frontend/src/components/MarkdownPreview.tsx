@@ -3,7 +3,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import mermaid from 'mermaid';
 import { useStore } from '../store';
-import { EditorService } from '../../bindings/m3warp/services';
+import { EditorService } from '../../bindings/sovereign-warp/services';
 
 // Initialize Mermaid
 mermaid.initialize({
